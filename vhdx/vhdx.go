@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"time"
 	"vhdxreader/vhdx/header"
 	"vhdxreader/vhdx/regions"
@@ -36,7 +37,7 @@ type Image struct {
 	RegionHeader regions.RegionTableHeader
 	Regions      regions.Regions
 
-	Metadata regions.Metadata
+	Metadata *regions.Metadata
 
 	// Decoded metadata
 
@@ -44,8 +45,8 @@ type Image struct {
 	LogicalSector  uint32
 	PhysicalSector uint32
 	BlockSize      uint32
-
-	CreatedAt time.Time // if you later decode timestamps from metadata/log
+	ParentImage    *Image
+	CreatedAt      time.Time // if you later decode timestamps from metadata/log
 }
 
 func (img *Image) ParseEvidence(path string) error {
@@ -147,13 +148,13 @@ func (img *Image) ParseEvidence(path string) error {
 		return err
 	}
 
-	mt := new(regions.Metadata)
-	if err = mt.Parse(img.Handler, metadataRegion.FileOffset); err != nil {
+	img.Metadata = new(regions.Metadata)
+	if err = img.Metadata.Parse(img.Handler, metadataRegion.FileOffset); err != nil {
 		return err
 	}
-	mt.ShowInfo()
+	img.Metadata.ShowInfo()
 
-	img.AddDiskParameters(mt)
+	img.AddDiskParameters()
 
 	chunkRatio, payLoadBlocksCnt, sectorBitmapBlocksCnt, totalBATEntries :=
 		img.DetermineBATLayout()
@@ -168,8 +169,20 @@ func (img *Image) ParseEvidence(path string) error {
 		return err
 	}
 	bat := new(regions.BAT)
-	if err = bat.Parse(buf); err != nil {
+	if err = bat.Parse(buf, int(chunkRatio)); err != nil {
 		return err
+
+	}
+
+	parentImagePath := img.LocateParentImage()
+	if parentImagePath != "" {
+		basepath := filepath.Dir(img.EvidencePath)
+		parentImagePath = filepath.Join(basepath, parentImagePath)
+		fmt.Printf("Parent image located at: %s\n", parentImagePath)
+		img.ParentImage = new(Image)
+		if err := img.ParentImage.ParseEvidence(parentImagePath); err != nil {
+			return fmt.Errorf("failed to parse parent image: %v", err)
+		}
 	}
 
 	return nil
@@ -195,8 +208,21 @@ func (img Image) findRegionByGUID(guid [16]byte) (*regions.RegionTableEntry, err
 	return nil, fmt.Errorf("required region not found: %s", utils.StringifyGUID(guid[:]))
 }
 
-func (img *Image) AddDiskParameters(mt *regions.Metadata) {
-	for _, entry := range mt.Entries {
+func (img Image) LocateParentImage() string {
+	for _, entry := range img.Metadata.Entries {
+		if entry.ParentLocator != nil {
+			for key, locator := range entry.ParentLocator.Locators {
+				if key == "relative_path" {
+					return locator
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (img *Image) AddDiskParameters() {
+	for _, entry := range img.Metadata.Entries {
 		if entry.FileParameters != nil {
 			img.BlockSize = uint32(entry.FileParameters.BlockSize)
 		} else if entry.LogicalSectorSize != nil {
