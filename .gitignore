@@ -1,0 +1,19 @@
+# Go build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace/cache files
+bin/
+coverage.out
+*.coverprofile
+
+# VS Code (ignore all local editor state)
+.vscode/*
+
+# Keep shared recommendations if you want to commit them
+!.vscode/extensions.json
