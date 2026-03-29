@@ -29,15 +29,11 @@ type Image struct {
 	Handler      *os.File
 
 	FileIdentifier *FileIdentifier
-	Header1        *header.VHDXHeader
-	Header2        *header.VHDXHeader
 
 	ActiveHeader *header.VHDXHeader
 
-	RegionHeader regions.RegionTableHeader
-	Regions      regions.Regions
-
 	Metadata *regions.Metadata
+	BAT      *regions.BAT
 
 	// Decoded metadata
 
@@ -72,28 +68,23 @@ func (img *Image) ParseEvidence(path string) error {
 		return err
 	}
 	header1 := new(header.VHDXHeader)
-	_, err = utils.Unmarshal(buf, header1)
+	err = header1.Parse(buf)
 	if err != nil {
 		return err
 	}
-	h1IsValid := header1.IsValid(buf[:4096])
-	img.Header1 = header1
-
 	if err := img.readAtExact(buf, 2*64*1024); err != nil {
 		return err
 	}
 	header2 := new(header.VHDXHeader)
-	_, err = utils.Unmarshal(buf, header2)
+	err = header2.Parse(buf)
 	if err != nil {
 		return err
 	}
-	img.Header2 = header2
-	h2IsValid := header2.IsValid(buf[:4096])
 
-	if !h1IsValid && !h2IsValid {
+	if !header1.IsValid(buf[:4096]) && !header2.IsValid(buf[:4096]) {
 		return errors.New("no valid header found")
 	}
-	img.DetermineActiveHeader()
+	img.DetermineActiveHeader(header1, header2)
 
 	if err := img.readAtExact(buf, 3*64*1024); err != nil {
 		return err
@@ -120,12 +111,13 @@ func (img *Image) ParseEvidence(path string) error {
 	if !regionHeader1IsValid && !regionHeader2IsValid {
 		return errors.New("no valid region header found")
 	}
+	var activeRegionHeader regions.RegionTableHeader
 	var regionTableOffset int64
 	if regionHeader1IsValid {
-		img.RegionHeader = *regionHeader1
+		activeRegionHeader = *regionHeader1
 		regionTableOffset = 3 * 64 * 1024
 	} else if regionHeader2IsValid {
-		img.RegionHeader = *regionHeader2
+		activeRegionHeader = *regionHeader2
 		regionTableOffset = 4 * 64 * 1024
 	}
 
@@ -133,17 +125,18 @@ func (img *Image) ParseEvidence(path string) error {
 		return err
 	}
 
-	if err := img.ParseRegions(buf[16 : 16+img.RegionHeader.EntryCount*32]); err != nil { // each entry is 32 bytes
+	regionEntries, err := img.ParseRegions(buf[16 : 16+activeRegionHeader.EntryCount*32]) // each entry is 32 bytes
+	if err != nil {
 		return err
 	}
-	img.Regions.ShowInfo()
+	regionEntries.ShowInfo()
 
-	metadataRegion, err := img.findRegionByGUID(regions.RegionGuidMetadata)
+	metadataRegion, err := img.findRegionByGUID(regionEntries, regions.RegionGuidMetadata)
 	if err != nil {
 		return err
 	}
 
-	batRegion, err := img.findRegionByGUID(regions.RegionGuidBAT)
+	batRegion, err := img.findRegionByGUID(regionEntries, regions.RegionGuidBAT)
 	if err != nil {
 		return err
 	}
@@ -168,8 +161,8 @@ func (img *Image) ParseEvidence(path string) error {
 	if err := img.readAtExact(buf, int64(batRegion.FileOffset)); err != nil {
 		return err
 	}
-	bat := new(regions.BAT)
-	if err = bat.Parse(buf, int(chunkRatio)); err != nil {
+	img.BAT = new(regions.BAT)
+	if err = img.BAT.Parse(buf, int(chunkRatio)); err != nil {
 		return err
 
 	}
@@ -188,6 +181,56 @@ func (img *Image) ParseEvidence(path string) error {
 	return nil
 }
 
+func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
+	buf := make([]byte, length)
+	var bytesToRead int64
+	if offset+length > int64(img.VirtualSize) {
+		return nil, fmt.Errorf("requested data exceeds virtual disk size")
+	}
+
+	blockStartIndex := offset / int64(img.BlockSize)
+	blockOffset := offset % int64(img.BlockSize)
+	remaining := length
+	dstOffset := int64(0)
+
+	for remaining > 0 {
+		entry := img.BAT.Entries[blockStartIndex]
+		if entry.IsSectorBitmap() {
+			bytesToRead = min(int64(img.LogicalSector)-blockOffset, remaining)
+		} else {
+			bytesToRead = min(int64(img.BlockSize)-blockOffset, remaining)
+		}
+
+		if entry.GetState() == "Zeroed" || entry.GetState() == "Unallocated" {
+			// Leave the destination range untouched; make already zero-initialized it.
+		} else if entry.GetState() == "Fully Present" {
+			if err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+bytesToRead]); err != nil {
+				return nil, err
+			}
+		} else if entry.GetState() == "Present" {
+
+			if err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+bytesToRead]); err != nil {
+				return nil, err
+			}
+		}
+
+		remaining -= bytesToRead
+		dstOffset += bytesToRead
+		blockStartIndex++
+		blockOffset = 0
+	}
+
+	return buf, nil
+}
+
+func (img Image) readBlockData(entry regions.BATEntry, blockOffset int64, dst []byte) error {
+	blockFileOffset := int64(entry.GetFileOffset())*int64(img.BlockSize) + blockOffset
+	if err := img.readAtExact(dst, blockFileOffset); err != nil {
+		return fmt.Errorf("read block data: %w", err)
+	}
+	return nil
+}
+
 func (img Image) readAtExact(dst []byte, off int64) error {
 	n, err := img.Handler.ReadAt(dst, off)
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -199,10 +242,10 @@ func (img Image) readAtExact(dst []byte, off int64) error {
 	return nil
 }
 
-func (img Image) findRegionByGUID(guid [16]byte) (*regions.RegionTableEntry, error) {
-	for i := range img.Regions {
-		if img.Regions[i].Guid == guid {
-			return &img.Regions[i], nil
+func (img Image) findRegionByGUID(regionEntries regions.Regions, guid [16]byte) (*regions.RegionTableEntry, error) {
+	for i := range regionEntries {
+		if regionEntries[i].Guid == guid {
+			return &regionEntries[i], nil
 		}
 	}
 	return nil, fmt.Errorf("required region not found: %s", utils.StringifyGUID(guid[:]))
@@ -246,25 +289,25 @@ func (img Image) DetermineBATLayout() (uint32, uint64, uint64, uint64) {
 	return chunkRatio, uint64(payLoadBlocksCnt), uint64(sectorBitmapBlocksCnt), uint64(totalBATEntries)
 }
 
-func (img *Image) ParseRegions(buf []byte) error {
+func (img *Image) ParseRegions(buf []byte) (regions.Regions, error) {
+	entryCount := len(buf) / 32
+	regionEntries := make(regions.Regions, entryCount)
 
-	img.Regions = make(regions.Regions, img.RegionHeader.EntryCount)
-
-	for i := range img.Regions {
-		_, err := utils.Unmarshal(buf[i*32:(i+1)*32], &img.Regions[i])
+	for i := range regionEntries {
+		_, err := utils.Unmarshal(buf[i*32:(i+1)*32], &regionEntries[i])
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return regionEntries, nil
 }
 
-func (img *Image) DetermineActiveHeader() {
-	if img.Header1.SequenceNumber > img.Header2.SequenceNumber {
-		img.ActiveHeader = img.Header1
+func (img *Image) DetermineActiveHeader(header1, header2 *header.VHDXHeader) {
+	if header1.SequenceNumber > header2.SequenceNumber {
+		img.ActiveHeader = header1
 	} else {
-		img.ActiveHeader = img.Header2
+		img.ActiveHeader = header2
 	}
 }
 
