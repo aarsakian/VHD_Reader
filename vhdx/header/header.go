@@ -34,3 +34,12 @@ func (h *VHDXHeader) IsValid(data []byte) bool {
 
 		h.Checksum == crc32.Checksum(data, utils.CrC32Table)
 }
+
+func (h *VHDXHeader) Parse(data []byte) error {
+	_, err := utils.Unmarshal(data, h)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
