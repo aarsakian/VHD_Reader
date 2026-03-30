@@ -146,6 +146,15 @@ type VirtualDiskId struct {
 	Id [16]byte
 }
 
+func (mt Metadata) HasParent() bool {
+	for _, entry := range mt.Entries {
+		if entry.FileParameters != nil && entry.FileParameters.HasParent {
+			return true
+		}
+	}
+	return false
+}
+
 // IsRequired reports whether the implementation must understand this item to load the file.
 func (e *MetadataTableEntry) IsRequired() bool {
 	return e.Flags&(1<<2) != 0
