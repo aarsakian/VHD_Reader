@@ -6,8 +6,8 @@ import (
 )
 
 var payloadStateMap = map[int]string{
-	0: "Unallocated",
-	1: "Allocated",
+	0: "Not Present",
+	1: "Undefined",
 	2: "Zeroed",
 	3: "Unmapped",
 	6: "Fully Present",
