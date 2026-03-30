@@ -1,6 +1,7 @@
 package vhdx
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/aarsakian/FileSystemForensics/utils"
 )
+
+var RAW_CHUNK_SIZE int64 = 256 * 1024 * 1024
 
 // All multi-byte integer fields are little-endian when reading/writing.
 
@@ -253,35 +256,43 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 
 			err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+bytesToRead])
 			if err == nil {
-				sectorBitMap := make([]byte, int64(img.BlockSize)/int64(img.LogicalSector)/8)
+				sectorBitMap := make([]byte, int64(img.BlockSize)/int64(img.LogicalSector))
 
 				pos := 0
 				for i := int64(0); i < int64(len(sectorBitMap)); i++ {
 					if i > 0 && i%8 == 0 {
 						pos++
 					}
-					sectorBitMap[i] = buf[pos] & (1 << (7 - (i % 8)))
+					sectorBitMap[i] = buf[pos] >> (8 - i%8 - 1) & 1
 
 				}
-				sectorOffset := int64(0)
-				for _, sectorStatus := range sectorBitMap {
-					if remaining <= 0 {
-						break
-					}
-					if sectorStatus == 0 {
-						parentData, err := img.ParentImage.RetrieveData(sectorOffset, int64(img.LogicalSector))
+
+				sectorIndexStart := max(blockOffset/int64(img.LogicalSector)-1, 0)
+
+				sectorIndexEnd := sectorIndexStart + (bytesToRead / int64(img.LogicalSector))
+				dataRead := int64(0)
+				for i := sectorIndexStart; i < sectorIndexEnd; i++ {
+
+					if sectorBitMap[i] == 0 && img.IsDifferencing() { //child block does not have data for this sector, try to read from parent
+						parentData, err := img.ParentImage.RetrieveData(offset+dataRead, int64(img.LogicalSector))
 						bytesToRead = int64(len(parentData))
 						if err != nil {
 							return nil, fmt.Errorf("failed to retrieve data from parent image: %v", err)
 						}
-						copy(buf[dstOffset:dstOffset+int64(img.LogicalSector)], parentData)
-					} else { //child block has data for this sector
-
+						if int64(img.LogicalSector) > remaining {
+							copy(buf[dstOffset:dstOffset+remaining], parentData)
+						} else {
+							copy(buf[dstOffset:dstOffset+bytesToRead], parentData)
+						}
+					} else if sectorBitMap[i] == 6 && img.IsDifferencing() { //child block has data for this sector
+						if err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+int64(img.LogicalSector)]); err != nil {
+							return nil, err
+						}
 					}
-					sectorOffset += int64(img.LogicalSector)
 
 					dstOffset += int64(img.LogicalSector)
 					remaining -= int64(img.LogicalSector)
+					dataRead += int64(img.LogicalSector)
 
 				}
 			} else if err.Error() == "ReadBlockDataBoundsError" {
@@ -302,6 +313,17 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 	}
 
 	return buf, nil
+}
+
+func (img Image) IsDifferencing() bool {
+	return img.Metadata.HasParent() && img.BAT != nil && len(img.BAT.Entries) > 0
+}
+
+func (img Image) IsDynamic() bool {
+	return !img.Metadata.HasParent() && img.BAT == nil
+}
+func (img Image) IsFixed() bool {
+	return !img.IsDifferencing() && !img.IsDynamic()
 }
 
 func (img Image) readBlockData(entry regions.BATEntry, blockOffset int64, dst []byte) error {
@@ -454,6 +476,36 @@ func (img *Image) Close() {
 		img.Handler.Close()
 		img.Handler = nil
 	}
+
+}
+
+func (img Image) WriteRawFile(outfile string, offset int64, length int64) {
+	diskSize := img.VirtualSize
+	if length > int64(diskSize)-offset {
+		panic("Length cannot exceed disk size")
+	}
+
+	if length == 0 {
+		length = int64(diskSize) - offset
+	}
+
+	fmt.Printf("about to write %d MB raw data to %s\n", length/1024/1024, outfile)
+	//_buf := BufferPool.Get().([]byte)
+
+	f, _ := os.OpenFile(outfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	defer f.Close()
+
+	var buf bytes.Buffer
+	buf.Grow(int(RAW_CHUNK_SIZE))
+
+	data, err := img.RetrieveData(offset, length)
+	if err != nil {
+		panic(err)
+	}
+	buf.Write(data)
+
+	f.Write(data)
+	buf.Reset()
 
 }
 
