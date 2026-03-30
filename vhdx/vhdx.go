@@ -36,7 +36,7 @@ type Image struct {
 	BAT      *regions.BAT
 
 	// Decoded metadata
-
+	LogicalSize    uint64
 	VirtualSize    uint64
 	LogicalSector  uint32
 	PhysicalSector uint32
@@ -45,12 +45,44 @@ type Image struct {
 	CreatedAt      time.Time // if you later decode timestamps from metadata/log
 }
 
-func (img *Image) ParseEvidence(path string) error {
+type BlockDataBoundsError struct {
+	Offset      int64
+	Length      int64
+	LogicalSize int64
+}
+
+func (e *BlockDataBoundsError) Error() string {
+	return fmt.Sprintf("read block data out of bounds: offset=%d length=%d logicalSize=%d", e.Offset, e.Length, e.LogicalSize)
+}
+
+type BlockDataReadError struct {
+	Offset int64
+	Length int64
+	Err    error
+}
+
+func (e *BlockDataReadError) Error() string {
+	return fmt.Sprintf("read block data failed: offset=%d length=%d: %v", e.Offset, e.Length, e.Err)
+}
+
+func (e *BlockDataReadError) Unwrap() error {
+	return e.Err
+}
+
+func (img Image) HasParent() bool {
+	return img.Metadata.HasParent()
+}
+
+func (img *Image) ParseEvidence(path string) (err error) {
 	img.EvidencePath = path
 	if err := img.CreateHandler(); err != nil {
 		return err
 	}
-	defer img.Close()
+	defer func() {
+		if err != nil {
+			img.Close()
+		}
+	}()
 
 	buf := make([]byte, 64*1024)
 	if err := img.readAtExact(buf, 0); err != nil {
@@ -58,7 +90,7 @@ func (img *Image) ParseEvidence(path string) error {
 	}
 
 	fileIdentifier := new(FileIdentifier)
-	_, err := utils.Unmarshal(buf, fileIdentifier)
+	_, err = utils.Unmarshal(buf, fileIdentifier)
 	if err != nil {
 		return err
 	}
@@ -147,7 +179,9 @@ func (img *Image) ParseEvidence(path string) error {
 	}
 	img.Metadata.ShowInfo()
 
-	img.AddDiskParameters()
+	if err := img.AddDiskParameters(); err != nil {
+		return err
+	}
 
 	chunkRatio, payLoadBlocksCnt, sectorBitmapBlocksCnt, totalBATEntries :=
 		img.DetermineBATLayout()
@@ -201,12 +235,59 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 			bytesToRead = min(int64(img.BlockSize)-blockOffset, remaining)
 		}
 
-		if entry.GetState() == "Zeroed" || entry.GetState() == "Unallocated" {
+		if entry.GetState() == "Not Present" || entry.GetState() == "Undefined" {
 			// Leave the destination range untouched; make already zero-initialized it.
+			if img.HasParent() {
+				parentData, err := img.ParentImage.RetrieveData(offset, bytesToRead)
+				if err != nil {
+					return nil, fmt.Errorf("failed to retrieve data from parent image: %v", err)
+				}
+				copy(buf[dstOffset:dstOffset+bytesToRead], parentData)
+				bytesToRead = int64(len(parentData))
+			}
 		} else if entry.GetState() == "Fully Present" {
 			if err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+bytesToRead]); err != nil {
 				return nil, err
 			}
+		} else if entry.GetState() == "Partially Present" {
+
+			err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+bytesToRead])
+			if err == nil {
+				sectorBitMap := make([]byte, int64(img.BlockSize)/int64(img.LogicalSector)/8)
+
+				pos := 0
+				for i := int64(0); i < int64(len(sectorBitMap)); i++ {
+					if i > 0 && i%8 == 0 {
+						pos++
+					}
+					sectorBitMap[i] = buf[pos] & (1 << (7 - (i % 8)))
+
+				}
+				sectorOffset := int64(0)
+				for _, sectorStatus := range sectorBitMap {
+					if remaining <= 0 {
+						break
+					}
+					if sectorStatus == 0 {
+						parentData, err := img.ParentImage.RetrieveData(sectorOffset, int64(img.LogicalSector))
+						bytesToRead = int64(len(parentData))
+						if err != nil {
+							return nil, fmt.Errorf("failed to retrieve data from parent image: %v", err)
+						}
+						copy(buf[dstOffset:dstOffset+int64(img.LogicalSector)], parentData)
+					} else { //child block has data for this sector
+
+					}
+					sectorOffset += int64(img.LogicalSector)
+
+					dstOffset += int64(img.LogicalSector)
+					remaining -= int64(img.LogicalSector)
+
+				}
+			} else if err.Error() == "ReadBlockDataBoundsError" {
+				return nil, err
+			}
+
 		} else if entry.GetState() == "Present" {
 
 			if err := img.readBlockData(entry, blockOffset, buf[dstOffset:dstOffset+bytesToRead]); err != nil {
@@ -224,14 +305,53 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 }
 
 func (img Image) readBlockData(entry regions.BATEntry, blockOffset int64, dst []byte) error {
-	blockFileOffset := int64(entry.GetFileOffset())*int64(img.BlockSize) + blockOffset
+	readLength := int64(len(dst))
+	if readLength == 0 {
+		return nil
+	}
+
+	if blockOffset < 0 {
+		return &BlockDataBoundsError{Offset: blockOffset, Length: readLength, LogicalSize: int64(img.LogicalSize)}
+	}
+
+	// BAT file offsets are expressed in MiB units (MS-VHDX 2.2.5).
+	const mib = int64(1024 * 1024)
+	entryOffsetMB := entry.GetFileOffset()
+	if entryOffsetMB > uint64(math.MaxInt64)/uint64(mib) {
+		return &BlockDataBoundsError{Offset: math.MaxInt64, Length: readLength, LogicalSize: int64(img.LogicalSize)}
+	}
+
+	baseOffset := int64(entryOffsetMB) * mib
+	if blockOffset > math.MaxInt64-baseOffset {
+		return &BlockDataBoundsError{Offset: math.MaxInt64, Length: readLength, LogicalSize: int64(img.LogicalSize)}
+	}
+
+	blockFileOffset := baseOffset + blockOffset
+	logicalSize := int64(img.LogicalSize)
+	if blockFileOffset < 0 || blockFileOffset >= logicalSize || blockFileOffset+readLength > logicalSize {
+		return &BlockDataBoundsError{
+			Offset:      blockFileOffset,
+			Length:      readLength,
+			LogicalSize: logicalSize,
+		}
+	}
 	if err := img.readAtExact(dst, blockFileOffset); err != nil {
-		return fmt.Errorf("read block data: %w", err)
+		return &BlockDataReadError{
+			Offset: blockFileOffset,
+			Length: readLength,
+			Err:    err,
+		}
 	}
 	return nil
 }
 
 func (img Image) readAtExact(dst []byte, off int64) error {
+	if img.Handler == nil {
+		return errors.New("read on nil file handler")
+	}
+	if off < 0 {
+		return fmt.Errorf("negative read offset: %d", off)
+	}
 	n, err := img.Handler.ReadAt(dst, off)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
@@ -264,7 +384,14 @@ func (img Image) LocateParentImage() string {
 	return ""
 }
 
-func (img *Image) AddDiskParameters() {
+func (img *Image) AddDiskParameters() error {
+	info, err := os.Stat(img.EvidencePath)
+	if err != nil {
+		return err
+	}
+	img.CreatedAt = info.ModTime()
+	img.LogicalSize = uint64(info.Size())
+
 	for _, entry := range img.Metadata.Entries {
 		if entry.FileParameters != nil {
 			img.BlockSize = uint32(entry.FileParameters.BlockSize)
@@ -276,6 +403,7 @@ func (img *Image) AddDiskParameters() {
 			img.VirtualSize = entry.VirtualDiskSize.Size
 		}
 	}
+	return nil
 }
 
 func (img Image) DetermineBATLayout() (uint32, uint64, uint64, uint64) {
