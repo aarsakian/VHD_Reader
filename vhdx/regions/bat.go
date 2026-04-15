@@ -22,24 +22,27 @@ type BATEntry interface {
 }
 
 func (bat *BAT) Parse(data []byte, chunkRatio int) error {
-	var entry BATEntry
 	entryCount := len(data) / 8
-	bat.Entries = make([]BATEntry, 0, entryCount)
+	bat.Entries = make([]BATEntry, entryCount)
 
-	k := 0
+	chunkSize := chunkRatio + 1 // PB...PB + SB
+
 	for i := range entryCount {
 
-		if k == chunkRatio {
-			entry = &blocks.SectorBlock{}
-			k = 0
-		} else {
-			entry = &blocks.PayloadBlock{}
-			k++
-		}
-		entry.Parse(data[i*8 : (i+1)*8])
+		offsetInChunk := i % chunkSize
 
-		bat.Entries = append(bat.Entries, entry)
+		var entry BATEntry
+
+		if offsetInChunk == chunkRatio {
+			entry = &blocks.SectorBlock{} // SB
+		} else {
+			entry = &blocks.PayloadBlock{} // PB
+		}
+
+		entry.Parse(data[i*8 : (i+1)*8])
+		bat.Entries[i] = entry
 	}
+
 	return nil
 }
 
