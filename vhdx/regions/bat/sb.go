@@ -7,7 +7,7 @@ import (
 
 var sectorStateMap = map[int]string{
 	6: "Present",
-	7: "Not Present",
+	0: "Not Present",
 }
 
 // SB blocks exist to support partial‑block writes in differencing disks.
