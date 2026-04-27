@@ -252,7 +252,7 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 		offsetInBlock := offset % int64(img.BlockSize)
 		payloadBATIndex, _ := img.Locate(entryIndex)
 		entry := img.BAT.Entries[payloadBATIndex]
-		dataToRead := min(int64(len(buf))-bufferOffset, int64(img.BlockSize)-offsetInBlock)
+		dataToRead := min(int64(len(buf)-int(bufferOffset)), int64(img.BlockSize)-offsetInBlock)
 		logger.VHDX_Readerlogger.Info(fmt.Sprintf("BAT entry Id %d state=%s, points data at offset %d", entryIndex, entry.GetState(), entry.GetFileOffset()*1024*1024))
 		logger.VHDX_Readerlogger.Info(fmt.Sprintf("%s  logical offset %d block offset %d buffer offset %d remaining at block %d data to read %d",
 			img.EvidencePath, offset, offsetInBlock, bufferOffset, img.BlockSize-uint32(offsetInBlock), dataToRead))
@@ -313,13 +313,13 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 
 	}
 	// each sb covers
-	sectorIndexStart := payLoadBATIndex * int64(img.LogicalSector)
+	sectorIndexStart := payLoadBATIndex*int64(img.LogicalSector)*8 + offsetInBlock/int64(img.LogicalSector)
 
 	sectorCount := int64(len(buf)) / int64(img.LogicalSector)
 	sectorIndexEnd := min(sectorIndexStart+sectorCount, int64(len(sectorBitMapArray)))
 	bufferOffset := 0
 
-	for i := sectorIndexStart; i <= sectorIndexEnd; i++ {
+	for i := sectorIndexStart; i < sectorIndexEnd; i++ {
 		sectorBytesToRead := min(int64(img.LogicalSector), int64(len(buf))-int64(bufferOffset))
 
 		if sectorBitMapArray[i] == 0 && img.IsDifferencing() { //child block does not have data for this sector, try to read from parent
