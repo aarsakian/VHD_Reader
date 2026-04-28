@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aarsakian/VHDXReader/vhdx/header"
-	"github.com/aarsakian/VHDXReader/vhdx/logger"
-	"github.com/aarsakian/VHDXReader/vhdx/regions"
+	"github.com/aarsakian/VHD_Reader/vhdx/header"
+	"github.com/aarsakian/VHD_Reader/vhdx/logger"
+	"github.com/aarsakian/VHD_Reader/vhdx/regions"
 
-	"github.com/aarsakian/VHDXReader/utils"
+	"github.com/aarsakian/VHD_Reader/utils"
 )
 
 var RAW_CHUNK_SIZE int64 = 256 * 1024 * 1024

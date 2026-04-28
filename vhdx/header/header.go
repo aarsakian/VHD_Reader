@@ -3,7 +3,7 @@ package header
 import (
 	"hash/crc32"
 
-	"github.com/aarsakian/VHDXReader/utils"
+	"github.com/aarsakian/VHD_Reader/utils"
 )
 
 // ---------------------------------------------------------------------

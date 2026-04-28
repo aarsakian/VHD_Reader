@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"hash/crc32"
 
-	"github.com/aarsakian/VHDXReader/utils"
+	"github.com/aarsakian/VHD_Reader/utils"
 )
 
 // Known region GUIDs (you can fill actual values from spec)

@@ -3,7 +3,7 @@ package blocks
 import (
 	"fmt"
 
-	"github.com/aarsakian/VHDXReader/utils"
+	"github.com/aarsakian/VHD_Reader/utils"
 )
 
 var payloadStateMap = map[int]string{
