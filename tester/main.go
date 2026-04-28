@@ -5,8 +5,9 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"vhdxreader/vhdx"
-	"vhdxreader/vhdx/logger"
+
+	"github.com/aarsakian/VHDXReader/vhdx"
+	"github.com/aarsakian/VHDXReader/vhdx/logger"
 )
 
 // ReadFromPhysicalDrive reads data directly from a physical drive

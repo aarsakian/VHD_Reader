@@ -3,7 +3,8 @@ package regions
 import (
 	"fmt"
 	"hash/crc32"
-	"vhdxreader/utils"
+
+	"github.com/aarsakian/VHDXReader/utils"
 )
 
 // Known region GUIDs (you can fill actual values from spec)

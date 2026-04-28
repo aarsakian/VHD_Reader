@@ -5,7 +5,8 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"vhdxreader/utils"
+
+	"github.com/aarsakian/VHDXReader/utils"
 )
 
 // ---------------------------------------------------------------------

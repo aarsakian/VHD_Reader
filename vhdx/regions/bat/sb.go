@@ -2,7 +2,8 @@ package blocks
 
 import (
 	"fmt"
-	"vhdxreader/utils"
+
+	"github.com/aarsakian/VHDXReader/utils"
 )
 
 var sectorStateMap = map[int]string{

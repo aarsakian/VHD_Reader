@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log"
 	"time"
-	"vhdxreader/vhdx"
-	"vhdxreader/vhdx/logger"
+
+	"github.com/aarsakian/VHDXReader/vhdx"
+	"github.com/aarsakian/VHDXReader/vhdx/logger"
 )
 
 func main() {

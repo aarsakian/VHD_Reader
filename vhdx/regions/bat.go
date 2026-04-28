@@ -2,7 +2,8 @@ package regions
 
 import (
 	"fmt"
-	blocks "vhdxreader/vhdx/regions/bat"
+
+	blocks "github.com/aarsakian/VHDXReader/vhdx/regions/bat"
 )
 
 // ---------------------------------------------------------------------
