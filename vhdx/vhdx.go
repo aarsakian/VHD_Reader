@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/aarsakian/VHD_Reader/logger"
 	"github.com/aarsakian/VHD_Reader/vhdx/header"
-	"github.com/aarsakian/VHD_Reader/vhdx/logger"
 	"github.com/aarsakian/VHD_Reader/vhdx/regions"
 
 	"github.com/aarsakian/VHD_Reader/utils"
@@ -167,7 +167,6 @@ func (img *Image) ParseEvidence(path string) (err error) {
 	if err != nil {
 		return err
 	}
-	regionEntries.ShowInfo()
 
 	metadataRegion, err := img.findRegionByGUID(regionEntries, regions.RegionGuidMetadata)
 	if err != nil {
@@ -183,7 +182,6 @@ func (img *Image) ParseEvidence(path string) (err error) {
 	if err = img.Metadata.Parse(img.Handler, metadataRegion.FileOffset); err != nil {
 		return err
 	}
-	img.Metadata.ShowInfo()
 
 	if err := img.AddDiskParameters(); err != nil {
 		return err
