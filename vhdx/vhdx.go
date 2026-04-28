@@ -312,14 +312,14 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 		}
 
 	}
-	// each sb covers
-	sectorIndexStart := payLoadBATIndex*int64(img.LogicalSector)*8 + offsetInBlock/int64(img.LogicalSector)
+	// each sb coverss
+	sectorBitIndexStart := payLoadBATIndex*int64(img.LogicalSector)*8 + offsetInBlock/int64(img.LogicalSector)
 
-	sectorCount := int64(len(buf)) / int64(img.LogicalSector)
-	sectorIndexEnd := min(sectorIndexStart+sectorCount, int64(len(sectorBitMapArray)))
+	sectorBitCount := int64(len(buf)) / int64(img.LogicalSector)
+	sectorBitIndexEnd := min(sectorBitIndexStart+sectorBitCount, int64(len(sectorBitMapArray)))
 	bufferOffset := 0
 
-	for i := sectorIndexStart; i < sectorIndexEnd; i++ {
+	for i := sectorBitIndexStart; i < sectorBitIndexEnd; i++ {
 		sectorBytesToRead := min(int64(img.LogicalSector), int64(len(buf))-int64(bufferOffset))
 
 		if sectorBitMapArray[i] == 0 && img.IsDifferencing() { //child block does not have data for this sector, try to read from parent
@@ -588,4 +588,9 @@ func (loc BATLocator) SectorBitmapBATIndex(blockIndex int64) int64 {
 // Returns both indices at once.
 func (loc BATLocator) Locate(blockIndex int64) (payloadBAT, bitmapBAT int64) {
 	return loc.PayloadBATIndex(blockIndex), loc.SectorBitmapBATIndex(blockIndex)
+}
+
+func (img Image) ShowInfo() {
+	img.BAT.ShowInfo()
+	img.Metadata.ShowInfo()
 }
