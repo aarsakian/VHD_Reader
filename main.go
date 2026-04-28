@@ -15,6 +15,7 @@ func main() {
 	length := flag.Int64("len", 0, "number of bytes to read from offset in the evidence")
 	out := flag.String("out", "", "filename to write raw data")
 	logactive := flag.Bool("log", false, "enable logging")
+	showinfo := flag.Bool("showinfo", false, "show information about image")
 
 	flag.Parse()
 
@@ -33,6 +34,10 @@ func main() {
 	err := vhdx.ParseEvidence(*evidencePath)
 	if err != nil {
 		log.Fatalf("Failed to parse evidence: %v", err)
+	}
+
+	if *showinfo {
+		//	vhdx.ShowInfo()
 	}
 
 	if *out == "" && *offset >= 0 && *length > 0 {
