@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/aarsakian/VHD_Reader/logger"
 	"github.com/aarsakian/VHD_Reader/vhdx"
-	"github.com/aarsakian/VHD_Reader/vhdx/logger"
 )
 
 func main() {
