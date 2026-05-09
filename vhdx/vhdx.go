@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aarsakian/VHD_Reader/logger"
+
 	"github.com/aarsakian/VHD_Reader/vhdx/header"
 	"github.com/aarsakian/VHD_Reader/vhdx/regions"
 
@@ -186,15 +187,7 @@ func (img *Image) ParseEvidence(path string) (err error) {
 	if err := img.AddDiskParameters(); err != nil {
 		return err
 	}
-
-	chunkRatio, payLoadBlocksCnt, sectorBitmapBlocksCnt, totalBATEntries :=
-		img.DetermineBATLayout()
-
-	fmt.Printf("Chunk Ratio: %d\n", chunkRatio)
-	fmt.Printf("Payload Blocks Count: %d\n", payLoadBlocksCnt)
-	fmt.Printf("Sector Bitmap Blocks Count: %d\n", sectorBitmapBlocksCnt)
-	fmt.Printf("Total BAT Entries: %d\n", totalBATEntries)
-
+	chunkRatio, _, _, _ := img.DetermineBATLayout()
 	buf = make([]byte, batRegion.Length)
 	if err := img.readAtExact(buf, int64(batRegion.FileOffset)); err != nil {
 		return err
@@ -604,4 +597,15 @@ func (loc BATLocator) Locate(blockIndex int64) (payloadBAT, bitmapBAT int64) {
 func (img Image) ShowInfo() {
 	img.BAT.ShowInfo()
 	img.Metadata.ShowInfo()
+	img.ShowStats()
+}
+
+func (img Image) ShowStats() {
+	chunkRatio, payLoadBlocksCnt, sectorBitmapBlocksCnt, totalBATEntries :=
+		img.DetermineBATLayout()
+
+	fmt.Printf("Chunk Ratio: %d\n", chunkRatio)
+	fmt.Printf("Payload Blocks Count: %d\n", payLoadBlocksCnt)
+	fmt.Printf("Sector Bitmap Blocks Count: %d\n", sectorBitmapBlocksCnt)
+	fmt.Printf("Total BAT Entries: %d\n", totalBATEntries)
 }
