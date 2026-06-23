@@ -284,14 +284,19 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 }
 
 func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock int64, offset int64, buf []byte) error {
-
+	var sectorBitCount int64
 	payLoadBATIndex, sectorBitmapBATIndex := img.Locate(offset / int64(img.BlockSize))
 
 	sbEntry := img.BAT.Entries[sectorBitmapBATIndex]
 
 	// Calculate bit indices before allocating buffer
 	sectorBitIndexStart := payLoadBATIndex*int64(img.LogicalSector)*8 + offsetInBlock/int64(img.LogicalSector)
-	sectorBitCount := int64(len(buf)) / int64(img.LogicalSector)
+	if len(buf) > 512 {
+		sectorBitCount = int64(len(buf)) / int64(img.LogicalSector)
+	} else {
+		sectorBitCount = 1 // For small reads, we only need to check one sector
+	}
+
 	sectorBitIndexEnd := sectorBitIndexStart + sectorBitCount
 
 	// Calculate byte offsets: which bytes we actually need
