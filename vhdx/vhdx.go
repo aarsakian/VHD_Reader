@@ -283,75 +283,106 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 	return buf, nil
 }
 
-func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock int64, offset int64, buf []byte) error {
-	var sectorBitCount int64
-	payLoadBATIndex, sectorBitmapBATIndex := img.Locate(offset / int64(img.BlockSize))
-
-	sbEntry := img.BAT.Entries[sectorBitmapBATIndex]
-
-	// Calculate bit indices before allocating buffer
-	sectorBitIndexStart := payLoadBATIndex*int64(img.LogicalSector)*8 + offsetInBlock/int64(img.LogicalSector)
-	if len(buf) > 512 {
-		sectorBitCount = int64(len(buf)) / int64(img.LogicalSector)
-	} else {
-		sectorBitCount = 1 // For small reads, we only need to check one sector
+func (img Image) sectorBitmapBitIndex(payloadBATIndex, offsetInBlock int64) int64 {
+	if img.BatLoc == nil || img.BatLoc.ChunkRatio <= 0 {
+		return payloadBATIndex*int64(img.LogicalSector)*8 + offsetInBlock/int64(img.LogicalSector)
 	}
 
+	sectorsPerBlock := int64(img.BlockSize) / int64(img.LogicalSector)
+	if sectorsPerBlock <= 0 {
+		return 0
+	}
+
+	return (payloadBATIndex%int64(img.BatLoc.ChunkRatio))*sectorsPerBlock + offsetInBlock/int64(img.LogicalSector)
+}
+
+func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock int64, offset int64, buf []byte) error {
+	if len(buf) == 0 {
+		return nil
+	}
+	if img.LogicalSector == 0 {
+		return fmt.Errorf("logical sector size is zero")
+	}
+	if img.BAT == nil || img.BatLoc == nil {
+		return fmt.Errorf("BAT metadata is not initialized")
+	}
+
+	payloadBATIndex, sectorBitmapBATIndex := img.Locate(offset / int64(img.BlockSize))
+	sbEntry := img.BAT.Entries[sectorBitmapBATIndex]
+	if sbEntry == nil {
+		return fmt.Errorf("sector bitmap entry not found at BAT index %d", sectorBitmapBATIndex)
+	}
+
+	sectorBitIndexStart := img.sectorBitmapBitIndex(payloadBATIndex, offsetInBlock)
+	sectorBitCount := (int64(len(buf)) + int64(img.LogicalSector) - 1) / int64(img.LogicalSector)
 	sectorBitIndexEnd := sectorBitIndexStart + sectorBitCount
 
-	// Calculate byte offsets: which bytes we actually need
 	byteOffsetStart := sectorBitIndexStart / 8
-	byteOffsetEnd := (sectorBitIndexEnd + 7) / 8 // Round up to include partial byte
+	byteOffsetEnd := (sectorBitIndexEnd + 7) / 8
 	byteCount := byteOffsetEnd - byteOffsetStart
+	if byteCount <= 0 {
+		return nil
+	}
 
-	// Allocate only the required bytes
 	sectorBitMap := make([]byte, byteCount)
-
-	// Read only the required bytes from the sector bitmap BAT entry
-	err := img.readBlockData(sbEntry, byteOffsetStart, sectorBitMap)
-	if err != nil {
+	if err := img.readBlockData(sbEntry, byteOffsetStart, sectorBitMap); err != nil {
 		return err
 	}
 
-	// Convert only the required bytes to bit array
-	sectorBitMapArray := make([]uint, 8*len(sectorBitMap))
-	for i, byteVal := range sectorBitMap {
-		for bit := 0; bit < 8; bit++ {
-			sectorBitMapArray[8*i+bit] = (uint(byteVal) >> uint(bit)) & 1
-		}
-	}
-
-	// Adjust the end index based on actual buffer size
-	maxBitIndex := int64(len(sectorBitMapArray)) + byteOffsetStart*8
-	sectorBitIndexEnd = min(sectorBitIndexEnd, maxBitIndex)
+	bitOffset := byteOffsetStart * 8
 	bufferOffset := 0
+	logicalOffset := offset
+	blockOffsetInPayload := offsetInBlock
 
-	for i := sectorBitIndexStart; i < sectorBitIndexEnd; i++ {
-		// Adjust index since sectorBitMapArray starts at byteOffsetStart*8
-		bitmapIndex := i - byteOffsetStart*8
-		sectorBytesToRead := min(int64(img.LogicalSector), int64(len(buf))-int64(bufferOffset))
+	for bitIndex := sectorBitIndexStart; bitIndex < sectorBitIndexEnd; {
+		bitmapIndex := bitIndex - bitOffset
+		byteIndex := bitmapIndex / 8
+		bitInByte := bitmapIndex % 8
+		if byteIndex < 0 || byteIndex >= int64(len(sectorBitMap)) {
+			break
+		}
 
-		if sectorBitMapArray[bitmapIndex] == 0 && img.IsDifferencing() { //child block does not have data for this sector, try to read from parent
-			logger.VHDX_Readerlogger.Info(fmt.Sprintf("(Sector) %d Retrieving offset %d  len %d buf offset %d ",
-				i, offset, sectorBytesToRead, bufferOffset))
-			parentData, err := img.ParentImage.RetrieveData(offset, sectorBytesToRead)
+		bitValue := (sectorBitMap[byteIndex] >> uint(bitInByte)) & 1
+		runEnd := bitIndex + 1
+		for runEnd < sectorBitIndexEnd {
+			candidateIndex := runEnd - bitOffset
+			candidateByteIndex := candidateIndex / 8
+			candidateBitInByte := candidateIndex % 8
+			if candidateByteIndex < 0 || candidateByteIndex >= int64(len(sectorBitMap)) {
+				break
+			}
+			candidateValue := (sectorBitMap[candidateByteIndex] >> uint(candidateBitInByte)) & 1
+			if candidateValue != bitValue {
+				break
+			}
+			runEnd++
+		}
+
+		runSectorCount := runEnd - bitIndex
+		runBytes := min(int64(img.LogicalSector)*runSectorCount, int64(len(buf))-int64(bufferOffset))
+		if runBytes <= 0 {
+			break
+		}
+
+		if bitValue == 0 && img.IsDifferencing() {
+			logger.VHDX_Readerlogger.Info(fmt.Sprintf("(Sector run) %d Retrieving offset %d len %d buf offset %d",
+				bitIndex, logicalOffset, runBytes, bufferOffset))
+			parentData, err := img.ParentImage.RetrieveData(logicalOffset, runBytes)
 			if err != nil {
 				return fmt.Errorf("failed to retrieve data from parent image: %v", err)
 			}
-
 			copy(buf[bufferOffset:], parentData)
-
-		} else if sectorBitMapArray[bitmapIndex] == 1 && img.IsDifferencing() { //child block has data for this sector
-
-			if err := img.readBlockData(entry, offsetInBlock, buf[bufferOffset:bufferOffset+int(sectorBytesToRead)]); err != nil {
+		} else if bitValue == 1 && img.IsDifferencing() {
+			readOffsetInBlock := blockOffsetInPayload + (bitIndex-sectorBitIndexStart)*int64(img.LogicalSector)
+			if err := img.readBlockData(entry, readOffsetInBlock, buf[bufferOffset:bufferOffset+int(runBytes)]); err != nil {
 				return err
 			}
 		}
-		offset += sectorBytesToRead
-		bufferOffset += int(sectorBytesToRead)
 
-		offsetInBlock += sectorBytesToRead
-
+		logicalOffset += runBytes
+		bufferOffset += int(runBytes)
+		blockOffsetInPayload += runBytes
+		bitIndex = runEnd
 	}
 
 	return nil
