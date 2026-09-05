@@ -20,6 +20,7 @@ import (
 
 var RAW_CHUNK_SIZE int64 = 256 * 1024 * 1024
 
+//A chunk constists of multiple blocks according to chunkratio
 // All multi-byte integer fields are little-endian when reading/writing.
 
 // ---------------------------------------------------------------------
@@ -230,6 +231,7 @@ func (img Image) Locate(entryIndex int64) (int64, int64) {
 }
 
 func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("%s requested offset %d length %d", img.EvidencePath, offset, length))
 	buf := make([]byte, length)
 
 	if offset+length > int64(img.VirtualSize) {
@@ -245,14 +247,15 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 		payloadBATIndex, _ := img.Locate(entryIndex)
 		entry := img.BAT.Entries[payloadBATIndex]
 		dataToRead := min(int64(len(buf)-int(bufferOffset)), int64(img.BlockSize)-offsetInBlock)
-		logger.VHDX_Readerlogger.Info(fmt.Sprintf("BAT entry Id %d state=%s, points data at offset %d", entryIndex, entry.GetState(), entry.GetFileOffset()*1024*1024))
-		logger.VHDX_Readerlogger.Info(fmt.Sprintf("%s  logical offset %d block offset %d buffer offset %d remaining at block %d data to read %d",
-			img.EvidencePath, offset, offsetInBlock, bufferOffset, img.BlockSize-uint32(offsetInBlock), dataToRead))
+
+		logger.VHDX_Readerlogger.Info(fmt.Sprintf("BAT entry Id %d state=%s ", entryIndex, entry.GetState()))
+		logger.VHDX_Readerlogger.Info(fmt.Sprintf("buffer offset %d block offset %d remaining %d",
+			bufferOffset, offsetInBlock, remaining))
 
 		if entry.GetState() == "Not Present" && img.HasParent() {
 			// Leave the destination range untouched; make already zero-initialized it.
 
-			parentData, err := img.ParentImage.RetrieveData(offset, int64(img.BlockSize)-offsetInBlock)
+			parentData, err := img.ParentImage.RetrieveData(offset, dataToRead)
 			if err != nil {
 				return nil, fmt.Errorf("failed to retrieve data from parent image: %v", err)
 			}
@@ -292,8 +295,10 @@ func (img Image) sectorBitmapBitIndex(payloadBATIndex, offsetInBlock int64) int6
 	if sectorsPerBlock <= 0 {
 		return 0
 	}
+	sectorInChunk := (payloadBATIndex % int64(img.BatLoc.ChunkRatio)) * sectorsPerBlock
+	offsetInSectorsInBlock := offsetInBlock / int64(img.LogicalSector)
 
-	return (payloadBATIndex%int64(img.BatLoc.ChunkRatio))*sectorsPerBlock + offsetInBlock/int64(img.LogicalSector)
+	return sectorInChunk + offsetInSectorsInBlock
 }
 
 func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock int64, offset int64, buf []byte) error {
@@ -308,6 +313,7 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 	}
 
 	payloadBATIndex, sectorBitmapBATIndex := img.Locate(offset / int64(img.BlockSize))
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("payloadBAT Index %d sector BitMap Index %d", payloadBATIndex, sectorBitmapBATIndex))
 	sbEntry := img.BAT.Entries[sectorBitmapBATIndex]
 	if sbEntry == nil {
 		return fmt.Errorf("sector bitmap entry not found at BAT index %d", sectorBitmapBATIndex)
@@ -325,6 +331,8 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 	}
 
 	sectorBitMap := make([]byte, byteCount)
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("SB Entry offset %d state=%s, offset %d len %d", sbEntry.GetFileOffset(), sbEntry.GetState(),
+		byteOffsetStart, len(sectorBitMap)))
 	if err := img.readBlockData(sbEntry, byteOffsetStart, sectorBitMap); err != nil {
 		return err
 	}
@@ -365,8 +373,8 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 		}
 
 		if bitValue == 0 && img.IsDifferencing() {
-			logger.VHDX_Readerlogger.Info(fmt.Sprintf("(Sector run) %d Retrieving offset %d len %d buf offset %d",
-				bitIndex, logicalOffset, runBytes, bufferOffset))
+			logger.VHDX_Readerlogger.Info(fmt.Sprintf("Retrieving from parent offset %d len %d buf offset %d",
+				logicalOffset, runBytes, bufferOffset))
 			parentData, err := img.ParentImage.RetrieveData(logicalOffset, runBytes)
 			if err != nil {
 				return fmt.Errorf("failed to retrieve data from parent image: %v", err)
@@ -430,7 +438,7 @@ func (img Image) readBlockData(entry regions.BATEntry, blockOffset int64, dst []
 			LogicalSize: logicalSize,
 		}
 	}
-	logger.VHDX_Readerlogger.Info(fmt.Sprintf("Reading file %s at offset %d bytes %d",
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("Reading from %s at offset %d bytes %d",
 		img.EvidencePath, blockFileOffset, len(dst)))
 	if err := img.readAtExact(dst, blockFileOffset); err != nil {
 		return &BlockDataReadError{
