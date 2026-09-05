@@ -248,9 +248,7 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 		entry := img.BAT.Entries[payloadBATIndex]
 		dataToRead := min(int64(len(buf)-int(bufferOffset)), int64(img.BlockSize)-offsetInBlock)
 
-		logger.VHDX_Readerlogger.Info(fmt.Sprintf("BAT entry Id %d state=%s ", entryIndex, entry.GetState()))
-		logger.VHDX_Readerlogger.Info(fmt.Sprintf("buffer offset %d block offset %d remaining %d",
-			bufferOffset, offsetInBlock, remaining))
+		logger.VHDX_Readerlogger.Info(fmt.Sprintf("PB entry Id %d state=%s ", entryIndex, entry.GetState()))
 
 		if entry.GetState() == "Not Present" && img.HasParent() {
 			// Leave the destination range untouched; make already zero-initialized it.
@@ -281,6 +279,8 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 
 		bufferOffset += dataToRead
 
+		logger.VHDX_Readerlogger.Info(fmt.Sprintf("Read %d bytes, buffer offset %d, block offset %d, remaining %d",
+			bufferOffset, offsetInBlock, remaining))
 	}
 
 	return buf, nil
@@ -313,7 +313,7 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 	}
 
 	payloadBATIndex, sectorBitmapBATIndex := img.Locate(offset / int64(img.BlockSize))
-	logger.VHDX_Readerlogger.Info(fmt.Sprintf("payloadBAT Index %d sector BitMap Index %d", payloadBATIndex, sectorBitmapBATIndex))
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("PB index %d SB bitmap Index %d", payloadBATIndex, sectorBitmapBATIndex))
 	sbEntry := img.BAT.Entries[sectorBitmapBATIndex]
 	if sbEntry == nil {
 		return fmt.Errorf("sector bitmap entry not found at BAT index %d", sectorBitmapBATIndex)
@@ -373,8 +373,7 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 		}
 
 		if bitValue == 0 && img.IsDifferencing() {
-			logger.VHDX_Readerlogger.Info(fmt.Sprintf("Retrieving from parent offset %d len %d buf offset %d",
-				logicalOffset, runBytes, bufferOffset))
+
 			parentData, err := img.ParentImage.RetrieveData(logicalOffset, runBytes)
 			if err != nil {
 				return fmt.Errorf("failed to retrieve data from parent image: %v", err)
