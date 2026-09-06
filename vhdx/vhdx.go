@@ -266,6 +266,8 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 			if err := img.readBlockData(entry, offsetInBlock, buf[bufferOffset:bufferOffset+dataToRead]); err != nil {
 				return nil, err
 			}
+			logger.VHDX_Readerlogger.Info(fmt.Sprintf("Data read %d bytes, buffer offset %d",
+				dataToRead, bufferOffset))
 
 		} else if entry.GetState() == "Partially Present" {
 			// 0 since I need to check sectorbitMap
@@ -280,8 +282,6 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 
 		bufferOffset += dataToRead
 
-		logger.VHDX_Readerlogger.Info(fmt.Sprintf("Read %d bytes, buffer offset %d, block offset %d, remaining %d",
-			dataToRead, bufferOffset, offsetInBlock, remaining))
 	}
 
 	return buf, nil
@@ -314,11 +314,13 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 	}
 
 	payloadBATIndex, sectorBitmapBATIndex := img.Locate(offset / int64(img.BlockSize))
-	logger.VHDX_Readerlogger.Info(fmt.Sprintf("PB index %d SB bitmap Index %d", payloadBATIndex, sectorBitmapBATIndex))
+
 	sbEntry := img.BAT.Entries[sectorBitmapBATIndex]
 	if sbEntry == nil {
 		return fmt.Errorf("sector bitmap entry not found at BAT index %d", sectorBitmapBATIndex)
 	}
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("SB entry Id %d state=%s",
+		sectorBitmapBATIndex, sbEntry.GetState()))
 
 	sectorBitIndexStart := img.sectorBitmapBitIndex(payloadBATIndex, offsetInBlock)
 	sectorBitCount := (int64(len(buf)) + int64(img.LogicalSector) - 1) / int64(img.LogicalSector)
@@ -332,8 +334,9 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 	}
 
 	sectorBitMap := make([]byte, byteCount)
-	logger.VHDX_Readerlogger.Info(fmt.Sprintf("SB Entry offset %d state=%s, offset %d len %d", sbEntry.GetFileOffset(), sbEntry.GetState(),
-		byteOffsetStart, len(sectorBitMap)))
+
+	logger.VHDX_Readerlogger.Info(fmt.Sprintf("Reading sector bitmap from offset %d, length %d bytes", byteOffsetStart, byteCount))
+
 	if err := img.readBlockData(sbEntry, byteOffsetStart, sectorBitMap); err != nil {
 		return err
 	}
@@ -385,6 +388,8 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 			if err := img.readBlockData(entry, readOffsetInBlock, buf[bufferOffset:bufferOffset+int(runBytes)]); err != nil {
 				return err
 			}
+			logger.VHDX_Readerlogger.Info(fmt.Sprintf("Data read %d bytes, buffer offset %d",
+				runBytes, bufferOffset))
 		}
 
 		logicalOffset += runBytes
