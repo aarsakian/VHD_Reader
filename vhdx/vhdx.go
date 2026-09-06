@@ -226,8 +226,8 @@ if blockBytesToRead <= 0 {
 }
 */
 
-func (img Image) Locate(entryIndex int64) (int64, int64) {
-	return img.BatLoc.Locate(entryIndex)
+func (img Image) Locate(blockIndex int64) (int64, int64) {
+	return img.BatLoc.Locate(blockIndex)
 }
 
 func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
@@ -242,13 +242,14 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 	bufferOffset := int64(0)
 
 	for remaining > 0 {
-		entryIndex := offset / int64(img.BlockSize)
+		blockIndex := offset / int64(img.BlockSize)
 		offsetInBlock := offset % int64(img.BlockSize)
-		payloadBATIndex, _ := img.Locate(entryIndex)
+		payloadBATIndex, _ := img.Locate(blockIndex)
 		entry := img.BAT.Entries[payloadBATIndex]
 		dataToRead := min(int64(len(buf)-int(bufferOffset)), int64(img.BlockSize)-offsetInBlock)
 
-		logger.VHDX_Readerlogger.Info(fmt.Sprintf("PB entry Id %d state=%s ", entryIndex, entry.GetState()))
+		logger.VHDX_Readerlogger.Info(fmt.Sprintf("PB entry Id %d state=%s ",
+			blockIndex, entry.GetState()))
 
 		if entry.GetState() == "Not Present" && img.HasParent() {
 			// Leave the destination range untouched; make already zero-initialized it.
@@ -280,7 +281,7 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 		bufferOffset += dataToRead
 
 		logger.VHDX_Readerlogger.Info(fmt.Sprintf("Read %d bytes, buffer offset %d, block offset %d, remaining %d",
-			bufferOffset, offsetInBlock, remaining))
+			dataToRead, bufferOffset, offsetInBlock, remaining))
 	}
 
 	return buf, nil
@@ -619,10 +620,9 @@ type BATLocator struct {
 
 // Returns the BAT index of the payload block for a given blockIndex.
 func (loc BATLocator) PayloadBATIndex(blockIndex int64) int64 {
-	chunkSize := int64(loc.ChunkRatio + 1) // PB...PB + SB
+	// PB...PB + SB
 	chunkIndex := blockIndex / int64(loc.ChunkRatio)
-	offsetInChunk := blockIndex % int64(loc.ChunkRatio)
-	return chunkIndex*chunkSize + offsetInChunk
+	return blockIndex + chunkIndex // PB is always first in chunk
 }
 
 // Returns the BAT index of the sector bitmap block for the chunk containing blockIndex.
