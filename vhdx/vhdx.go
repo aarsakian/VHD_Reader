@@ -232,6 +232,12 @@ func (img Image) Locate(blockIndex int64) (int64, int64) {
 
 func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 	logger.VHDX_Readerlogger.Info(fmt.Sprintf("%s requested offset %d length %d", img.EvidencePath, offset, length))
+	if offset < 0 || length < 0 {
+		return nil, fmt.Errorf("offset and length must be non-negative")
+	}
+	if offset > math.MaxInt64-length {
+		return nil, fmt.Errorf("requested data range overflows int64")
+	}
 	buf := make([]byte, length)
 
 	if offset+length > int64(img.VirtualSize) {
@@ -270,8 +276,6 @@ func (img Image) RetrieveData(offset, length int64) ([]byte, error) {
 				dataToRead, bufferOffset))
 
 		} else if entry.GetState() == "Partially Present" {
-			// 0 since I need to check sectorbitMap
-
 			if err := img.RetrieveDataFromSector(entry, offsetInBlock, offset, buf[bufferOffset:bufferOffset+dataToRead]); err != nil {
 				return nil, err
 			}
@@ -296,7 +300,13 @@ func (img Image) sectorBitmapBitIndex(payloadBATIndex, offsetInBlock int64) int6
 	if sectorsPerBlock <= 0 {
 		return 0
 	}
-	sectorInChunk := (payloadBATIndex % int64(img.BatLoc.ChunkRatio)) * sectorsPerBlock
+
+	// Each BAT chunk is laid out as: PB...PB + SB. The sector bitmap is stored
+	// after every chunkRatio payload entries, so the BAT index of a payload block is
+	// shifted by the number of preceding sector-bitmap entries. We need the
+	// position within the chunk, not the absolute BAT slot index.
+	chunkSize := int64(img.BatLoc.ChunkRatio + 1)
+	sectorInChunk := (payloadBATIndex % chunkSize) * sectorsPerBlock
 	offsetInSectorsInBlock := offsetInBlock / int64(img.LogicalSector)
 
 	return sectorInChunk + offsetInSectorsInBlock
@@ -323,7 +333,7 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 		sectorBitmapBATIndex, sbEntry.GetState()))
 
 	sectorBitIndexStart := img.sectorBitmapBitIndex(payloadBATIndex, offsetInBlock)
-	sectorBitCount := (int64(len(buf)) + int64(img.LogicalSector) - 1) / int64(img.LogicalSector)
+	sectorBitCount := (offsetInBlock%int64(img.LogicalSector) + int64(len(buf)) + int64(img.LogicalSector) - 1) / int64(img.LogicalSector)
 	sectorBitIndexEnd := sectorBitIndexStart + sectorBitCount
 
 	byteOffsetStart := sectorBitIndexStart / 8
@@ -343,8 +353,6 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 
 	bitOffset := byteOffsetStart * 8
 	bufferOffset := 0
-	logicalOffset := offset
-	blockOffsetInPayload := offsetInBlock
 
 	for bitIndex := sectorBitIndexStart; bitIndex < sectorBitIndexEnd; {
 		bitmapIndex := bitIndex - bitOffset
@@ -370,31 +378,28 @@ func (img Image) RetrieveDataFromSector(entry regions.BATEntry, offsetInBlock in
 			runEnd++
 		}
 
-		runSectorCount := runEnd - bitIndex
-		runBytes := min(int64(img.LogicalSector)*runSectorCount, int64(len(buf))-int64(bufferOffset))
-		if runBytes <= 0 {
-			break
-		}
-
-		if bitValue == 0 && img.IsDifferencing() {
-
+		runStartInBlock := offsetInBlock + (bitIndex-sectorBitIndexStart)*int64(img.LogicalSector)
+		runEndInBlock := runStartInBlock + int64(img.LogicalSector)*(runEnd-bitIndex)
+		readStartInBlock := max(offsetInBlock, runStartInBlock)
+		readEndInBlock := min(offsetInBlock+int64(len(buf)), runEndInBlock)
+		runBytes := readEndInBlock - readStartInBlock
+		if runBytes > 0 && bitValue == 0 && img.IsDifferencing() {
+			logicalOffset := offset - offsetInBlock + readStartInBlock
 			parentData, err := img.ParentImage.RetrieveData(logicalOffset, runBytes)
 			if err != nil {
 				return fmt.Errorf("failed to retrieve data from parent image: %v", err)
 			}
-			copy(buf[bufferOffset:], parentData)
-		} else if bitValue == 1 && img.IsDifferencing() {
-			readOffsetInBlock := blockOffsetInPayload + (bitIndex-sectorBitIndexStart)*int64(img.LogicalSector)
-			if err := img.readBlockData(entry, readOffsetInBlock, buf[bufferOffset:bufferOffset+int(runBytes)]); err != nil {
+			copy(buf[bufferOffset:bufferOffset+int(runBytes)], parentData)
+		} else if runBytes > 0 && bitValue == 1 && img.IsDifferencing() {
+			readBufferOffset := int(readStartInBlock - offsetInBlock)
+			if err := img.readBlockData(entry, readStartInBlock, buf[readBufferOffset:readBufferOffset+int(runBytes)]); err != nil {
 				return err
 			}
 			logger.VHDX_Readerlogger.Info(fmt.Sprintf("Data read %d bytes, buffer offset %d",
-				runBytes, bufferOffset))
+				runBytes, readBufferOffset))
 		}
 
-		logicalOffset += runBytes
-		bufferOffset += int(runBytes)
-		blockOffsetInPayload += runBytes
+		bufferOffset = int(readEndInBlock - offsetInBlock)
 		bitIndex = runEnd
 	}
 
